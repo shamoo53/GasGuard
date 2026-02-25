@@ -60,9 +60,9 @@ export class ApiKeyService {
    * Generate a cryptographically secure API key
    */
   private generateApiKey(): { rawKey: string; keyHash: string } {
-    const randomPart = randomBytes(32).toString('base64url');
+    const randomPart = crypto.randomBytes(32).toString('base64url');
     const rawKey = `${this.keyPrefix}_${randomPart}`;
-    const keyHash = createHash('sha256').update(rawKey).digest('hex');
+    const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
     return { rawKey, keyHash };
   }
 
@@ -70,7 +70,7 @@ export class ApiKeyService {
    * Hash an existing API key
    */
   hashApiKey(rawKey: string): string {
-    return createHash('sha256').update(rawKey).digest('hex');
+    return crypto.createHash('sha256').update(rawKey).digest('hex');
   }
 
   /**
