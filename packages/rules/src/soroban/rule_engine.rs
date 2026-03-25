@@ -45,7 +45,9 @@ impl SorobanRuleEngine {
             .add_rule(MissingConstructorRule::default())
             .add_rule(AdminPatternRule::default())
             .add_rule(InefficientIntegerTypesRule::default())
-            .add_rule(MissingErrorHandlingRule::default());
+            .add_rule(MissingErrorHandlingRule::default())
+            .add_rule(EmergencyWithdrawalRule::default())
+            .add_rule(GovernanceVotingRule::default());
     }
     
     /// Analyze Soroban contract source code
@@ -612,6 +614,152 @@ impl SorobanRule for MissingErrorHandlingRule {
     }
 }
 
+/// Rule for detecting emergency withdrawal functions without authorization
+pub struct EmergencyWithdrawalRule {
+    enabled: bool,
+}
+
+impl Default for EmergencyWithdrawalRule {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl SorobanRule for EmergencyWithdrawalRule {
+    fn id(&self) -> &str {
+        "soroban-emergency-withdrawal"
+    }
+    
+    fn name(&self) -> &str {
+        "Emergency Withdrawal Check"
+    }
+    
+    fn description(&self) -> &str {
+        "Detects emergency withdrawal functions lacking proper authorization or whitelist checks"
+    }
+    
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::High
+    }
+    
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+    
+    fn apply(&self, contract: &SorobanContract) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+        
+        for implementation in &contract.implementations {
+            for function in &implementation.functions {
+                let func_name = function.name.to_lowercase();
+                
+                // Identify emergency withdrawal functions
+                if func_name.contains("emergency") || func_name.contains("withdraw_all") || func_name.contains("rescue") {
+                    let source = &function.raw_definition;
+                    
+                    if !source.contains("require_auth") && !source.contains("authorize") && !source.contains("panic!") {
+                        violations.push(RuleViolation {
+                            rule_name: self.id().to_string(),
+                            description: format!("Emergency function '{}' lacks authorization check", function.name),
+                            suggestion: "Implement restrictive access control for emergency functions to prevent unauthorized fund depletion".to_string(),
+                            line_number: function.line_number,
+                            column_number: 0,
+                            variable_name: function.name.clone(),
+                            severity: self.severity(),
+                        });
+                    }
+                }
+            }
+        }
+        
+        violations
+    }
+}
+
+/// Rule for detecting governance voting functions without authorization
+pub struct GovernanceVotingRule {
+    enabled: bool,
+}
+
+impl Default for GovernanceVotingRule {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl SorobanRule for GovernanceVotingRule {
+    fn id(&self) -> &str {
+        "soroban-governance-voting"
+    }
+    
+    fn name(&self) -> &str {
+        "Governance Voting Check"
+    }
+    
+    fn description(&self) -> &str {
+        "Detects voting functions that may be missing authorization checks or are structurally insecure"
+    }
+    
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::High
+    }
+    
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+    
+    fn apply(&self, contract: &SorobanContract) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+        
+        for implementation in &contract.implementations {
+            for function in &implementation.functions {
+                let func_name = function.name.to_lowercase();
+                
+                // Identify voting functions
+                if func_name.contains("vote") || func_name.contains("propose") || func_name.contains("ballot") {
+                    let source = &function.raw_definition;
+                    
+                    // Check for authorization: require_auth() or authorize()
+                    if !source.contains("require_auth") && !source.contains("authorize") {
+                        violations.push(RuleViolation {
+                            rule_name: self.id().to_string(),
+                            description: format!("Governance function '{}' lacks explicit authorization check", function.name),
+                            suggestion: "Add 'caller.require_auth()' or 'env.authorize()' to ensure only authorized users can perform governance actions".to_string(),
+                            line_number: function.line_number,
+                            column_number: 0,
+                            variable_name: function.name.clone(),
+                            severity: self.severity(),
+                        });
+                    }
+                    
+                    // Check for timestamp/expiration usage in proposals (heuristic)
+                    if func_name.contains("propose") && !source.contains("timestamp") && !source.contains("expiration") {
+                        violations.push(RuleViolation {
+                            rule_name: self.id().to_string(),
+                            description: format!("Governance function '{}' may be missing proposal expiration logic", function.name),
+                            suggestion: "Proposals should have an expiration timestamp to prevent indefinite open voting".to_string(),
+                            line_number: function.line_number,
+                            column_number: 0,
+                            variable_name: function.name.clone(),
+                            severity: ViolationSeverity::Warning,
+                        });
+                    }
+                }
+            }
+        }
+        
+        violations
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,6 +772,8 @@ mod tests {
         let rule_ids: Vec<_> = engine.get_rules().iter().map(|r| r.id()).collect();
         assert!(rule_ids.contains(&"soroban-unused-state-variables"));
         assert!(rule_ids.contains(&"soroban-inefficient-storage"));
+        assert!(rule_ids.contains(&"soroban-governance-voting"));
+        assert!(rule_ids.contains(&"soroban-emergency-withdrawal"));
     }
     
     #[test]
@@ -660,4 +810,38 @@ impl TestContract {
         );
         assert!(unused_found);
     }
+
+    #[test]
+    fn test_governance_voting_rule() {
+        let source = r#"
+use soroban_sdk::{contract, contractimpl, Env, Address};
+
+#[contract]
+pub struct GovernanceContract;
+
+#[contractimpl]
+impl GovernanceContract {
+    // ❌ Issue: Missing authorization check for voting
+    pub fn vote(env: Env, voter: Address, proposal_id: u64, support: bool) {
+        // voter should have require_auth() called here
+        let mut current_votes: u64 = env.storage().instance().get(&proposal_id).unwrap_or(0);
+        if support {
+            current_votes += 1;
+        }
+        env.storage().instance().set(&proposal_id, &current_votes);
+    }
 }
+"#;
+        
+        let rule = GovernanceVotingRule::default();
+        let contract = SorobanParser::parse_contract(source, "governance.rs").unwrap();
+        
+        let violations = rule.apply(&contract);
+        
+        let vote_issue_found = violations.iter().any(|v| 
+            v.rule_name == "soroban-governance-voting" && 
+            v.description.contains("vote")
+        );
+        assert!(vote_issue_found);
+    }
+}
